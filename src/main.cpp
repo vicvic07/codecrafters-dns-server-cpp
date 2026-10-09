@@ -3,7 +3,15 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
-
+std::string createHeader ()
+{
+    std::string ret;
+    ret.resize(12);
+    ret[0]=0b00000100;
+    ret[1]=0b11010010;
+    ret[2]=0b10000000;
+    return ret;
+}
 int main() {
     // Flush after every std::cout / std::cerr
     std::cout << std::unitbuf;
@@ -58,11 +66,10 @@ int main() {
         buffer[bytesRead] = '\0';
         std::cout << "Received " << bytesRead << " bytes: " << buffer << std::endl;
 
-        // Create an empty response
-        char response[1] = { '\0' };
+        std::string response = createHeader();
 
         // Send response
-        if (sendto(udpSocket, response, sizeof(response), 0, reinterpret_cast<struct sockaddr*>(&clientAddress), sizeof(clientAddress)) == -1) {
+        if (sendto(udpSocket, response.c_str(), (ssize_t)response.size(), 0, reinterpret_cast<struct sockaddr*>(&clientAddress), sizeof(clientAddress)) == -1) {
             perror("Failed to send response");
         }
     }
