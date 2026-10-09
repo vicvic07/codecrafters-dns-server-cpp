@@ -4,7 +4,7 @@
 #include <netinet/in.h>
 #include <unistd.h>
 #include <iomanip>
-std::string createHeader (std::string query)
+std::string createHeader (const char* query, int read)
 {
     std::string ret;
     ret.resize(12);
@@ -13,11 +13,37 @@ std::string createHeader (std::string query)
     ret[2]=0b10000000;
     ret[3]=0b00000000;
     ret[5]=0b00000001;
+    ret[7]=0b00000001;
     return ret;
 }
-std::string createQuestion (std::string query)
+std::string createQuestion (const char* query, int read)
 {
-    return query;
+    std::string ret="";
+    for (int i=12;i<read;i++)
+    {
+        unsigned char ch = query[i];
+        ret.append(1, ch);
+    }
+    return ret;
+}
+std::string createResponse (const char* query, int read)
+{
+    std::string ret="";
+    for (int i=12;i<read;i++)
+    {
+        unsigned char ch = query[i];
+        ret.append(1, ch);
+    }
+    ret.append(1, 0);
+    ret.append(1, 0b00000001);
+    ret.append(1, 0);
+    ret.append(1, 0b00000001);
+    ret.append(3, 0);
+    ret.append(1, 0b00100011); // 67
+    ret.append(1, 0);
+    ret.append(1, 0b00000100);
+    ret.append(4, '\x08');
+    return ret;
 }
 int main() {
     // Flush after every std::cout / std::cerr
@@ -73,14 +99,7 @@ int main() {
         buffer[bytesRead] = '\0';
         std::cout << "Received " << bytesRead << " bytes: " << buffer << std::endl;
 
-        std::string response = createHeader(buffer);
-        for (int i=12;i<bytesRead;i++)
-        {
-            unsigned char ch = buffer[i];
-            std::cout << std::fixed << std::hex << std::setfill('0') << std::setw(2) << (int)ch << " ";
-            response.append(1, ch);
-        }
-        std::cout << response.size() << "\n";
+        std::string response = createHeader(buffer, bytesRead)+createQuestion(buffer, bytesRead)+createResponse(buffer, bytesRead);
         // Send response
         if (sendto(udpSocket, response.c_str(), (ssize_t)response.size(), 0, reinterpret_cast<struct sockaddr*>(&clientAddress), sizeof(clientAddress)) == -1) {
             perror("Failed to send response");
