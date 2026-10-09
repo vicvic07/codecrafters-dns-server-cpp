@@ -1,12 +1,16 @@
 #include <iostream>
 #include <cstring>
 #include <sys/socket.h>
+#include <arpa/inet.h>
 #include <netinet/in.h>
 #include <unistd.h>
 #include <iomanip>
 int id=0, nr_questions=0;
-char opcode=0;
+char opcode=0, forwarding=0;
 bool rd=0;
+int udpSocketToMaster;
+sockaddr_in masterAddress;
+socklen_t masterAddrLen;
 std::string createHeader (const char* query, int read)
 {
     std::string ret;
@@ -20,8 +24,6 @@ std::string createHeader (const char* query, int read)
     for (int i=0;i<=3;i++)
         ret[2] |=(1 << 3)*(opcode & (1 << i));
     ret[2] |=rd;
-    ret[3]=0b00000000;
-    std::cout << nr_questions << "\n";
     ret[5]=nr_questions;
     ret[7]=nr_questions;
     if (opcode!=0)
@@ -37,6 +39,31 @@ std::string getNextWord (const char* input, int read, int &pos, const char* ch)
         ret.append(1, input[pos++]);
     return ret;
 }
+std::string getNextQuestion (const char* input, int read, int &pos)
+{
+    std::string query = getNextWord (input, read, pos, "\0");
+    bool has_ptr=0;
+    for (int i=0;i<query.size();i++)
+    {
+        unsigned char ch = query[i];
+        if ((ch & 0b11000000) == 0b11000000)
+        {
+            int ptr = ((ch^0b11000000) << 8) | query[i+1];
+            has_ptr=1;
+            query.pop_back();
+            query.pop_back();
+            /// popped the pointer TAG and the POINTER
+            for (int j=ptr;j<read && input[j]!='\x00';j++)
+                query.append (1, input[j]);
+            break;
+        }
+    }
+    query+='\0';
+    if (!has_ptr)
+        ++pos;
+    /// also it returns the question WITHOUT the last 4 bytes (the TYPE and CLASS fields)
+    return query;
+}
 std::string createQuestion (const char* input, int read)
 {
     std::string ret="";
@@ -44,26 +71,7 @@ std::string createQuestion (const char* input, int read)
     nr_questions=0;
     while (pos<read)
     {
-        std::string query = getNextWord (input, read, pos, "\0");
-        bool has_ptr=0;
-        for (int i=0;i<ret.size();i++)
-        {
-            unsigned char ch = query[i];
-            if ((ch & 0b11000000) == 0b11000000)
-            {
-                int ptr = ((ch^0b11000000) << 8) | query[i+1];
-                has_ptr=1;
-                query.pop_back();
-                query.pop_back();
-                /// popped the pointer TAG and the POINTER
-                for (int j=ptr;j<read && input[j]!='\x00';j++)
-                    query.append (1, input[j]);
-                break;
-            }
-        }
-        query+='\0';
-        if (!has_ptr)
-            ++pos;
+        std::string query=getNextQuestion (input, read, pos);
         /// after this, pos will be on the NULL char that is separating questions
         for (int i=0;i<4;i++)
             query.append (1, input[pos++]);
@@ -78,29 +86,9 @@ std::string createResponse (const char* input, int read)
     int pos=12;
     while (pos<read)
     {
-        std::string query = getNextWord (input, read, pos, "\0");
-        bool has_ptr=0;
-        for (int i=0;i<ret.size();i++)
-        {
-            unsigned char ch = query[i];
-            if ((ch & 0b11000000) == 0b11000000)
-            {
-                int ptr = ((ch^0b11000000) << 8) | query[i+1];
-                has_ptr=1;
-                query.pop_back();
-                query.pop_back();
-                /// popped the pointer TAG and the POINTER
-                for (int j=ptr;input[j]!='\x00';j++)
-                    query.append (1, input[j]);
-                break;
-            }
-        }
-        query+='\0';
-        if (!has_ptr)
-            ++pos;
-        /// after this, pos will be on the NULL char that is separating questions
+        std::string query = getNextQuestion (input, read, pos);
         pos+=4;
-        ret.append(query);
+        ret.append(query);    std::cout << "\n";
         ret.append(1, 0);
         ret.append(1, 0b00000001);
         ret.append(1, 0);
@@ -129,7 +117,38 @@ void getInfo (const char *query, int read)
     }
     rd=query[2] & 1;
 }
-int main() {
+int main(int argc, char **argv) {
+    if (argc)
+    {
+        for (int i=0;i<argc;i++)
+        {
+            char *arg = argv[i];
+            if (strlen(arg)>=2 && arg[0]=='-' && arg[1]=='-')
+            {
+                int pos=0;
+                std::string nxt = getNextWord (arg, strlen(arg), pos, "- \n");
+                if (nxt=="resolver")
+                {
+                    int pos2=0;
+                    ++i;
+                    forwarding=1;
+                    char *sock = argv[i];
+                    std::string ip_string = getNextWord (sock, strlen(sock), pos2, "-:\n ");
+                    std::string port_string = getNextWord (sock, strlen(sock), pos2, ":\n -");
+                    udpSocketToMaster = socket(AF_INET, SOCK_DGRAM, 0);
+                    if (udpSocketToMaster==-1)
+                    {
+                        std::cerr << "Socket creation to master failed!";
+                        return 1;
+                    }
+                    masterAddress.sin_family=AF_INET;
+                    masterAddress.sin_port=htons(atoi(port_string.c_str()));
+                    inet_pton(AF_INET, ip_string.c_str(), &masterAddress.sin_addr);
+                    masterAddrLen = sizeof(masterAddress);
+                }
+            }
+        }
+    }
     // Flush after every std::cout / std::cerr
     std::cout << std::unitbuf;
     std::cerr << std::unitbuf;
@@ -181,12 +200,40 @@ int main() {
         getInfo(buffer, bytesRead);
         buffer[bytesRead] = '\0';
         std::cout << "Received " << bytesRead << " bytes: " << buffer << std::endl;
-
-        std::string response = createQuestion(buffer, bytesRead)+createResponse(buffer, bytesRead);
-        response=createHeader(buffer, bytesRead)+response;
+        std::string response="";
         // Send response
-        if (sendto(udpSocket, response.c_str(), (ssize_t)response.size(), 0, reinterpret_cast<struct sockaddr*>(&clientAddress), sizeof(clientAddress)) == -1) {
-            perror("Failed to send response");
+        if (forwarding)
+        {
+            char qr_response[4096];
+            int pos=12;
+            std::string answer_section="";
+            std::string send="";
+            for (int i=0;i<=11;i++)
+                send.append(1, buffer[i]);
+            send[5]=1;
+            while (pos<bytesRead)
+            {
+                std::string query = getNextQuestion(buffer, bytesRead, pos);
+                for (int i=0;i<4;i++)
+                    query.append(1, buffer[pos++]);
+                if (sendto(udpSocketToMaster, (send+query).c_str(), (send+query).size(), 0, reinterpret_cast<struct sockaddr*>(&masterAddress), sizeof(masterAddress)) == -1)
+                    perror("Failed to query master");
+                int resp_bytes = recvfrom(udpSocketToMaster, qr_response, sizeof(qr_response), 0, reinterpret_cast<struct sockaddr*>(&masterAddress), &masterAddrLen);
+                for (int i=12+query.size();i<resp_bytes;i++)
+                    answer_section.append(1, qr_response[i]);
+            }
+            response=createQuestion(buffer, bytesRead)+answer_section;
+            response=createHeader(buffer, bytesRead)+response;
+            if (sendto(udpSocket, response.c_str(), (ssize_t)response.size(), 0, reinterpret_cast<struct sockaddr*>(&clientAddress), sizeof(clientAddress)) == -1)
+                perror("Failed to send response");
+        }
+        else
+        {
+            std::string response = createQuestion(buffer, bytesRead)+createResponse(buffer, bytesRead);
+            response=createHeader(buffer, bytesRead)+response;
+            if (sendto(udpSocket, response.c_str(), (ssize_t)response.size(), 0, reinterpret_cast<struct sockaddr*>(&clientAddress), sizeof(clientAddress)) == -1) {
+                perror("Failed to send response");
+            }
         }
     }
 
