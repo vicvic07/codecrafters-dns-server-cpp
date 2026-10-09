@@ -4,16 +4,27 @@
 #include <netinet/in.h>
 #include <unistd.h>
 #include <iomanip>
+int id=0;
+char opcode=0;
+bool rd=0;
 std::string createHeader (const char* query, int read)
 {
     std::string ret;
     ret.resize(12);
-    ret[0]=0b00000100;
-    ret[1]=0b11010010;
+    for (int i=0;i<2;i++)
+    {
+        for (int j=0;j<=7;j++)
+            ret[i] |=(((1 << 15-8*i-j) & id) >> ((1-i)*8));
+    }
     ret[2]=0b10000000;
+    for (int i=0;i<=3;i++)
+        ret[2] |=(1 << 3)*(opcode & (1 << i));
+    ret[2] |=rd;
     ret[3]=0b00000000;
     ret[5]=0b00000001;
     ret[7]=0b00000001;
+    if (opcode!=0)
+        ret[3]=0b00000100;
     return ret;
 }
 std::string createQuestion (const char* query, int read)
@@ -39,11 +50,27 @@ std::string createResponse (const char* query, int read)
     ret.append(1, 0);
     ret.append(1, 0b00000001);
     ret.append(3, 0);
-    ret.append(1, 0b00100011); // 67
+    ret.append(1, 0b01000011); // 67 (this time it actually is that)
     ret.append(1, 0);
     ret.append(1, 0b00000100);
     ret.append(4, '\x08');
     return ret;
+}
+void getInfo (const char *query, int read)
+{
+    id=opcode=rd=0;
+    for (int i=0;i<2;i++)
+    {
+        for (int j=0;j<=7;j++)
+        {
+            id+=(1 << 8*(1-i))*((1 << j) & query[i]);
+        }
+    }
+    for (int i=3;i<=6;i++)
+    {
+        opcode |=(query[2] & (1 << i)) >> 3;
+    }
+    rd=query[2] & 1;
 }
 int main() {
     // Flush after every std::cout / std::cerr
@@ -87,7 +114,6 @@ int main() {
     int bytesRead;
     char buffer[4096];
     socklen_t clientAddrLen = sizeof(clientAddress);
-
     while (true) {
         // Receive data
         bytesRead = recvfrom(udpSocket, buffer, sizeof(buffer), 0, reinterpret_cast<struct sockaddr*>(&clientAddress), &clientAddrLen);
@@ -95,7 +121,8 @@ int main() {
             perror("Error receiving data");
             break;
         }
-
+        getInfo(buffer, bytesRead);
+        std::cout << id << "\n";
         buffer[bytesRead] = '\0';
         std::cout << "Received " << bytesRead << " bytes: " << buffer << std::endl;
 
