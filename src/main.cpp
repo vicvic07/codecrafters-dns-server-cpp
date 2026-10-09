@@ -3,14 +3,21 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
-std::string createHeader ()
+#include <iomanip>
+std::string createHeader (std::string query)
 {
     std::string ret;
     ret.resize(12);
     ret[0]=0b00000100;
     ret[1]=0b11010010;
     ret[2]=0b10000000;
+    ret[3]=0b00000000;
+    ret[5]=0b00000001;
     return ret;
+}
+std::string createQuestion (std::string query)
+{
+    return query;
 }
 int main() {
     // Flush after every std::cout / std::cerr
@@ -52,7 +59,7 @@ int main() {
     }
 
     int bytesRead;
-    char buffer[512];
+    char buffer[4096];
     socklen_t clientAddrLen = sizeof(clientAddress);
 
     while (true) {
@@ -66,8 +73,14 @@ int main() {
         buffer[bytesRead] = '\0';
         std::cout << "Received " << bytesRead << " bytes: " << buffer << std::endl;
 
-        std::string response = createHeader();
-
+        std::string response = createHeader(buffer);
+        for (int i=12;i<bytesRead;i++)
+        {
+            unsigned char ch = buffer[i];
+            std::cout << std::fixed << std::hex << std::setfill('0') << std::setw(2) << (int)ch << " ";
+            response.append(1, ch);
+        }
+        std::cout << response.size() << "\n";
         // Send response
         if (sendto(udpSocket, response.c_str(), (ssize_t)response.size(), 0, reinterpret_cast<struct sockaddr*>(&clientAddress), sizeof(clientAddress)) == -1) {
             perror("Failed to send response");
