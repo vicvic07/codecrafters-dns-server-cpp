@@ -4,7 +4,7 @@
 #include <netinet/in.h>
 #include <unistd.h>
 #include <iomanip>
-int id=0;
+int id=0, nr_questions=0;
 char opcode=0;
 bool rd=0;
 std::string createHeader (const char* query, int read)
@@ -21,39 +21,96 @@ std::string createHeader (const char* query, int read)
         ret[2] |=(1 << 3)*(opcode & (1 << i));
     ret[2] |=rd;
     ret[3]=0b00000000;
-    ret[5]=0b00000001;
-    ret[7]=0b00000001;
+    std::cout << nr_questions << "\n";
+    ret[5]=nr_questions;
+    ret[7]=nr_questions;
     if (opcode!=0)
         ret[3]=0b00000100;
     return ret;
 }
-std::string createQuestion (const char* query, int read)
+std::string getNextWord (const char* input, int read, int &pos, const char* ch)
+{
+    std::string ret;
+    while (pos<read && strchr (ch, input[pos]))
+        ++pos;
+    while (pos<read && !strchr(ch, input[pos]))
+        ret.append(1, input[pos++]);
+    return ret;
+}
+std::string createQuestion (const char* input, int read)
 {
     std::string ret="";
-    for (int i=12;i<read;i++)
+    int pos=12;
+    nr_questions=0;
+    while (pos<read)
     {
-        unsigned char ch = query[i];
-        ret.append(1, ch);
+        std::string query = getNextWord (input, read, pos, "\0");
+        bool has_ptr=0;
+        for (int i=0;i<ret.size();i++)
+        {
+            unsigned char ch = query[i];
+            if ((ch & 0b11000000) == 0b11000000)
+            {
+                int ptr = ((ch^0b11000000) << 8) | query[i+1];
+                has_ptr=1;
+                query.pop_back();
+                query.pop_back();
+                /// popped the pointer TAG and the POINTER
+                for (int j=ptr;j<read && input[j]!='\x00';j++)
+                    query.append (1, input[j]);
+                break;
+            }
+        }
+        query+='\0';
+        if (!has_ptr)
+            ++pos;
+        /// after this, pos will be on the NULL char that is separating questions
+        for (int i=0;i<4;i++)
+            query.append (1, input[pos++]);
+        ++nr_questions;
+        ret.append(query);
     }
     return ret;
 }
-std::string createResponse (const char* query, int read)
+std::string createResponse (const char* input, int read)
 {
     std::string ret="";
-    for (int i=12;i<read;i++)
+    int pos=12;
+    while (pos<read)
     {
-        unsigned char ch = query[i];
-        ret.append(1, ch);
+        std::string query = getNextWord (input, read, pos, "\0");
+        bool has_ptr=0;
+        for (int i=0;i<ret.size();i++)
+        {
+            unsigned char ch = query[i];
+            if ((ch & 0b11000000) == 0b11000000)
+            {
+                int ptr = ((ch^0b11000000) << 8) | query[i+1];
+                has_ptr=1;
+                query.pop_back();
+                query.pop_back();
+                /// popped the pointer TAG and the POINTER
+                for (int j=ptr;input[j]!='\x00';j++)
+                    query.append (1, input[j]);
+                break;
+            }
+        }
+        query+='\0';
+        if (!has_ptr)
+            ++pos;
+        /// after this, pos will be on the NULL char that is separating questions
+        pos+=4;
+        ret.append(query);
+        ret.append(1, 0);
+        ret.append(1, 0b00000001);
+        ret.append(1, 0);
+        ret.append(1, 0b00000001);
+        ret.append(3, 0);
+        ret.append(1, 0b01000011); // 67 (this time it actually is that)
+        ret.append(1, 0);
+        ret.append(1, 0b00000100);
+        ret.append(4, '\x08');
     }
-    ret.append(1, 0);
-    ret.append(1, 0b00000001);
-    ret.append(1, 0);
-    ret.append(1, 0b00000001);
-    ret.append(3, 0);
-    ret.append(1, 0b01000011); // 67 (this time it actually is that)
-    ret.append(1, 0);
-    ret.append(1, 0b00000100);
-    ret.append(4, '\x08');
     return ret;
 }
 void getInfo (const char *query, int read)
@@ -122,11 +179,11 @@ int main() {
             break;
         }
         getInfo(buffer, bytesRead);
-        std::cout << id << "\n";
         buffer[bytesRead] = '\0';
         std::cout << "Received " << bytesRead << " bytes: " << buffer << std::endl;
 
-        std::string response = createHeader(buffer, bytesRead)+createQuestion(buffer, bytesRead)+createResponse(buffer, bytesRead);
+        std::string response = createQuestion(buffer, bytesRead)+createResponse(buffer, bytesRead);
+        response=createHeader(buffer, bytesRead)+response;
         // Send response
         if (sendto(udpSocket, response.c_str(), (ssize_t)response.size(), 0, reinterpret_cast<struct sockaddr*>(&clientAddress), sizeof(clientAddress)) == -1) {
             perror("Failed to send response");
